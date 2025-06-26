@@ -1,6 +1,7 @@
-Flask
-pydub
-numpy
-pandas
 mido
-fluidsynth
+pydub
+flask
+python-dotenv
+scipy
+numpy
+soundfile
