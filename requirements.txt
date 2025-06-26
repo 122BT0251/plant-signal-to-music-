@@ -1,5 +1,5 @@
 mido
-pydub
+pydub==0.25.1
 flask
 python-dotenv
 scipy
