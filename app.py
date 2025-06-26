@@ -7,6 +7,16 @@ from mido import MidiFile, MidiTrack, Message, MetaMessage, bpm2tempo
 from pydub import AudioSegment
 from pydub.generators import Sine
 import io
+import os
+import urllib.request
+
+SOUNDFONT_URL = "https://github.com/urish/cynthion/raw/main/resources/FluidR3_GM.sf2"
+SOUNDFONT_PATH = "FluidR3_GM.sf2"
+
+# Download the file if it's not already there
+if not os.path.exists(SOUNDFONT_PATH):
+    print("Downloading FluidR3_GM.sf2...")
+    urllib.request.urlretrieve(SOUNDFONT_URL, SOUNDFONT_PATH)
 
 app = Flask(__name__)
 
