@@ -1,8 +1,6 @@
-mido
-pydub==0.25.1
-flask
-python-dotenv
-scipy
+Flask
+pydub
 numpy
 pandas
-soundfile
+mido
+python-rtmidi
