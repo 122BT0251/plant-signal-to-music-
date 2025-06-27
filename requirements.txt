@@ -4,3 +4,4 @@ numpy
 pandas
 mido
 python-rtmidi
+mediainfo 
