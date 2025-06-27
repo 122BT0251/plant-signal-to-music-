@@ -5,3 +5,6 @@ pandas
 mido
 python-rtmidi
 mediainfo 
+scipy
+matplotlib
+ffmpeg-python
