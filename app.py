@@ -37,72 +37,64 @@ instrument_map = {k: v for k, v in enumerate([
 ])}
 name_to_number = {v: k for k, v in instrument_map.items()}
 
-# Load your plant signal data here
-df = pd.read_excel("signal_data.xlsx")
-signal = df.select_dtypes(include=[np.number]).iloc[:, 0].dropna().values
-
 def normalize_signal(signal, min_val=30, max_val=90):
+    signal = np.array(signal)
     if np.max(signal) == np.min(signal):
         return np.full_like(signal, (min_val + max_val) // 2)
-    signal = (signal - np.min(signal)) / (np.max(signal) - np.min(signal) + 1e-8)
-    return (signal * (max_val - min_val) + min_val).astype(int)
+    norm = (signal - np.min(signal)) / (np.max(signal) - np.min(signal) + 1e-8)
+    return (norm * (max_val - min_val) + min_val).astype(int)
 
 def generate_midi(notes, filename, instrument_number, tempo_multiplier):
     mid = MidiFile()
     track = MidiTrack()
     mid.tracks.append(track)
-
     bpm = 120 * tempo_multiplier
     track.append(MetaMessage("set_tempo", tempo=bpm2tempo(bpm), time=0))
     track.append(Message("program_change", program=instrument_number, time=0))
-
     note_length = 240
-    gap = 0
-
     for i, note in enumerate(notes):
-        time_on = gap if i != 0 else 0
-        pitch = int(note)
-        track.append(Message("note_on", note=pitch, velocity=64, time=time_on))
-        track.append(Message("note_off", note=pitch, velocity=64, time=note_length))
-
+        time_on = 0 if i == 0 else 0
+        track.append(Message('note_on', note=int(note), velocity=64, time=time_on))
+        track.append(Message('note_off', note=int(note), velocity=64, time=note_length))
     mid.save(filename)
 
-def convert_wav_to_mp3(wav_path):
-    buf = io.BytesIO()
-    stream = ffmpeg.input(wav_path)
-    stream = ffmpeg.output(stream, 'pipe:', format='mp3', acodec='libmp3lame')
-    out, _ = ffmpeg.run(stream, capture_stdout=True, capture_stderr=True)
-    buf.write(out)
-    buf.seek(0)
-    return buf
-
-@app.route('/generate-audio', methods=['POST'])
+@app.route("/generate-audio", methods=["POST"])
 def generate_audio():
     data = request.get_json()
-    instrument = data.get("instrument", "Acoustic Grand Piano")
+    signal = data.get("signal", [])
+    instrument_name = data.get("instrument", "Acoustic Grand Piano")
     tempo = float(data.get("tempo", 1.0))
 
-    instrument_number = name_to_number.get(instrument, 0)
-    notes = normalize_signal(signal)
+    if not signal:
+        return jsonify({"error": "No signal data provided"}), 400
+    if instrument_name not in name_to_number:
+        return jsonify({"error": "Invalid instrument name"}), 400
 
-    with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as mid_file, \
+    notes = normalize_signal(signal)
+    instrument_number = name_to_number[instrument_name]
+
+    with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as midi_file, \
          tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
 
-        generate_midi(notes, mid_file.name, instrument_number, tempo)
+        generate_midi(notes, midi_file.name, instrument_number, tempo)
 
-        cmd = [
-            'fluidsynth', '-ni', 'FluidR3_GM.sf2',
-            mid_file.name, '-F', wav_file.name, '-r', '44100'
+        # Convert MIDI to WAV using fluidsynth
+        synth_cmd = [
+            "fluidsynth", "-ni", "/app/FluidR3_GM.sf2", midi_file.name,
+            "-F", wav_file.name, "-r", "44100"
         ]
-        os.system(' '.join(cmd))
+        os.system(" ".join(synth_cmd))
 
-        mp3_io = convert_wav_to_mp3(wav_file.name)
+        # Convert WAV to MP3 using ffmpeg-python
+        mp3_buffer = io.BytesIO()
+        (
+            ffmpeg
+            .input(wav_file.name)
+            .output('pipe:', format='mp3')
+            .run(capture_stdout=True, capture_stderr=True, stdout=mp3_buffer)
+        )
+        mp3_buffer.seek(0)
+        return send_file(mp3_buffer, mimetype='audio/mpeg')
 
-    return send_file(mp3_io, mimetype='audio/mpeg')
-
-@app.route('/')
-def home():
-    return jsonify({"message": "Plant music backend is running!"})
-
-if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
