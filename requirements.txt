@@ -1,10 +1,7 @@
-Flask
-pydub
+flask
+flask-cors
 numpy
 pandas
+pydub
 mido
-python-rtmidi
-mediainfo 
-scipy
-matplotlib
-ffmpeg-python
+gunicorn
