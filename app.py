@@ -1,22 +1,19 @@
 import os
 import io
 import tempfile
-import subprocess
 import numpy as np
+import pandas as pd
 from flask import Flask, request, send_file, jsonify
-from flask_cors import CORS
 from mido import MidiFile, MidiTrack, Message, MetaMessage, bpm2tempo
-from pydub import AudioSegment
-from pydub.generators import Sine
-
+from scipy.io.wavfile import read as wav_read
+import ffmpeg
 
 SOUNDFONT_URL = "https://github.com/urish/cynthion/raw/main/resources/FluidR3_GM.sf2"
 SOUNDFONT_PATH = "FluidR3_GM.sf2"
 
 app = Flask(__name__)
-CORS(app)
 
-# --- MIDI Instrument Mapping ---
+# MIDI Instrument Mapping (0–127)
 instrument_map = {k: v for k, v in enumerate([
     "Acoustic Grand Piano", "Bright Acoustic Piano", "Electric Grand Piano", "Honky-tonk Piano", "Electric Piano 1",
     "Electric Piano 2", "Harpsichord", "Clavinet", "Celesta", "Glockenspiel", "Music Box", "Vibraphone",
@@ -40,100 +37,72 @@ instrument_map = {k: v for k, v in enumerate([
 ])}
 name_to_number = {v: k for k, v in instrument_map.items()}
 
-# --- Signal Processing ---
+# Load your plant signal data here
+df = pd.read_excel("signal_data.xlsx")
+signal = df.select_dtypes(include=[np.number]).iloc[:, 0].dropna().values
+
 def normalize_signal(signal, min_val=30, max_val=90):
-    signal = np.array(signal)
     if np.max(signal) == np.min(signal):
         return np.full_like(signal, (min_val + max_val) // 2)
     signal = (signal - np.min(signal)) / (np.max(signal) - np.min(signal) + 1e-8)
     return (signal * (max_val - min_val) + min_val).astype(int)
 
-# --- MIDI Generator ---
 def generate_midi(notes, filename, instrument_number, tempo_multiplier):
     mid = MidiFile()
     track = MidiTrack()
     mid.tracks.append(track)
+
     bpm = 120 * tempo_multiplier
     track.append(MetaMessage("set_tempo", tempo=bpm2tempo(bpm), time=0))
     track.append(Message("program_change", program=instrument_number, time=0))
 
     note_length = 240
-    gap_between_notes = 0
+    gap = 0
 
     for i, note in enumerate(notes):
-        time_on = gap_between_notes if i != 0 else 0
-        track.append(Message('note_on', note=int(note), velocity=64, time=time_on))
-        track.append(Message('note_off', note=int(note), velocity=64, time=note_length))
-    
+        time_on = gap if i != 0 else 0
+        pitch = int(note)
+        track.append(Message("note_on", note=pitch, velocity=64, time=time_on))
+        track.append(Message("note_off", note=pitch, velocity=64, time=note_length))
+
     mid.save(filename)
 
-# --- API Endpoint ---
+def convert_wav_to_mp3(wav_path):
+    buf = io.BytesIO()
+    stream = ffmpeg.input(wav_path)
+    stream = ffmpeg.output(stream, 'pipe:', format='mp3', acodec='libmp3lame')
+    out, _ = ffmpeg.run(stream, capture_stdout=True, capture_stderr=True)
+    buf.write(out)
+    buf.seek(0)
+    return buf
+
 @app.route('/generate-audio', methods=['POST'])
 def generate_audio():
     data = request.get_json()
+    instrument = data.get("instrument", "Acoustic Grand Piano")
+    tempo = float(data.get("tempo", 1.0))
 
-    try:
-        signal = data['signal']
-        instrument = data['instrument']
-        tempo = float(data.get('tempo', 1.0))
-        gain_db = int(data.get('gain_db', 10))
-        reverb = data.get('reverb', True)
-        spatial = data.get('spatial', 'Center')
-        timbre = data.get('timbre', 'None')
+    instrument_number = name_to_number.get(instrument, 0)
+    notes = normalize_signal(signal)
 
-        if instrument not in name_to_number:
-            return jsonify({'error': 'Invalid instrument name'}), 400
+    with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as mid_file, \
+         tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
 
-        notes = normalize_signal(signal)
-        instrument_number = name_to_number[instrument]
+        generate_midi(notes, mid_file.name, instrument_number, tempo)
 
-        with tempfile.NamedTemporaryFile(suffix='.mid', delete=False) as midi_file, \
-             tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as wav_file:
+        cmd = [
+            'fluidsynth', '-ni', 'FluidR3_GM.sf2',
+            mid_file.name, '-F', wav_file.name, '-r', '44100'
+        ]
+        os.system(' '.join(cmd))
 
-            generate_midi(notes, midi_file.name, instrument_number, tempo)
-            reverb_flags = [] if reverb else ['-R', '0']
+        mp3_io = convert_wav_to_mp3(wav_file.name)
 
-            subprocess.run(
-                ['fluidsynth', '-ni'] + reverb_flags + [
-                    'static/soundfonts/FluidR3_GM.sf2',
-                    midi_file.name,
-                    '-F', wav_file.name,
-                    '-r', '44100'
-                ],
-                check=True
-            )
+    return send_file(mp3_io, mimetype='audio/mpeg')
 
-            audio = AudioSegment.from_wav(wav_file.name)
+@app.route('/')
+def home():
+    return jsonify({"message": "Plant music backend is running!"})
 
-            # Add sonic texture
-            duration_ms = len(audio)
-            drone = Sine(220).to_audio_segment(duration=duration_ms).apply_gain(-30)
-            drone = drone.low_pass_filter(400)
-            audio = audio.overlay(drone)
-
-            # Gain, spatial, timbre
-            audio += gain_db
-            if spatial == "Left":
-                audio = audio.pan(-1.0)
-            elif spatial == "Right":
-                audio = audio.pan(1.0)
-
-            if timbre == "Warm":
-                audio = audio.low_pass_filter(2000)
-            elif timbre == "Smooth":
-                audio = audio.high_pass_filter(500).low_pass_filter(5000)
-            elif timbre == "Rich":
-                audio = audio + audio.high_pass_filter(1000)
-
-            buf = io.BytesIO()
-            audio.export(buf, format='mp3')
-            buf.seek(0)
-            return send_file(buf, mimetype='audio/mpeg')
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-# --- Run Locally or via Gunicorn ---
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.getenv("PORT", 5000)))
-
+    app.run(debug=True, port=5000)

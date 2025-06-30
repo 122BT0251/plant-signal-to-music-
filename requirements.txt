@@ -1,7 +1,7 @@
+gunicorn
 flask
-flask-cors
+mido
 numpy
 pandas
-pydub
-mido
-gunicorn
+scipy
+ffmpeg-python
